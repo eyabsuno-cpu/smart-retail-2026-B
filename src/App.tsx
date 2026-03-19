@@ -42,7 +42,8 @@ import {
   CircleHelp
 } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
-
+import * as XLSX from 'xlsx';
+import { supabase } from './lib/supabase';
 type Step = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12;
 
 const frenchCities = [
@@ -50,6 +51,7 @@ const frenchCities = [
   "Strasbourg", "Bordeaux", "Lille", "Rennes", "Reims", "Saint-Étienne", 
   "Le Havre", "Toulon", "Grenoble", "Dijon", "Angers", "Nîmes", "Villeurbanne"
 ];
+
 
 const Logo = () => (
   <div className="flex items-center gap-2">
@@ -145,10 +147,28 @@ export default function App() {
     setter(numericValue);
   };
 
-  const handleLogin = () => {
+  const handleLogin = async () => {
     if (loginEmail && loginPassword) {
-      setIsLoggedIn(true);
-      setStep(2);
+      try {
+        // 1. Envoi de l'e-mail vers ta table Supabase
+        const { error } = await supabase
+          .from('users_vb')
+          .insert([{ email: loginEmail }]);
+
+        if (error) {
+          console.error("Erreur lors de la collecte de l'e-mail :", error.message);
+        }
+
+        // 2. Autorisation d'accès et passage à l'étape suivante (Dashboard)
+        setIsLoggedIn(true);
+        setStep(2);
+        
+      } catch (err: any) {
+        console.error("Erreur technique :", err.message);
+        // En cas d'erreur réseau, on permet quand même à l'utilisateur d'entrer
+        setIsLoggedIn(true);
+        setStep(2);
+      }
     }
   };
 
@@ -164,19 +184,54 @@ export default function App() {
 
   const isReadyToStart = isFormValid;
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
-    if (files && files.length > 0) {
-      const newFiles = Array.from(files).map((file: File) => ({
-        id: Math.random().toString(36).substr(2, 9),
-        name: file.name,
-        size: (file.size / (1024 * 1024)).toFixed(1) + " MB",
-        date: new Date().toLocaleString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
-        count: Math.floor(Math.random() * 500) + 100
-      }));
-      setUploadedFiles(prev => [...prev, ...newFiles]);
-      setImportType('csv');
-    }
+    if (!files || files.length === 0) return;
+    
+    const file = files[0]; // Sélection du fichier
+
+    const reader = new FileReader();
+    reader.onload = async (evt) => {
+      try {
+        // Lecture du fichier Excel/CSV
+        const bstr = evt.target?.result;
+        const wb = XLSX.read(bstr, { type: 'binary' });
+        const jsonData = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
+
+        // Nettoyage et formatage strict des données
+        const cleanData = jsonData.map((item: any) => ({
+          code_article: String(item.code_article || ''),
+          famille_produit: String(item.famille_produit || ''),
+          date_transaction: String(item.date_transaction || ''),
+          quantite_vendue: parseInt(item.quantite_vendue) || 0,
+          point_de_vente: String(item.point_de_vente || ''),
+          stock_actuel: parseInt(item.stock_actuel) || 0,
+          prix_vente_ht: String(item.prix_vente_ht || '0')
+        }));
+
+        // Exécution de la requête d'insertion vers Supabase
+        const { error } = await supabase.from('products_vb').insert(cleanData);
+        if (error) throw error;
+
+        // Mise à jour de l'interface visuelle en cas de succès
+        const newFile = {
+          id: Math.random().toString(36).substr(2, 9),
+          name: file.name,
+          size: (file.size / (1024 * 1024)).toFixed(1) + " MB",
+          date: new Date().toLocaleString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
+          count: cleanData.length
+        };
+        
+        setUploadedFiles(prev => [...prev, newFile]);
+        setImportType('csv');
+        alert("Données envoyées avec succès à Supabase !");
+
+      } catch (err: any) {
+        console.error("Erreur base de données:", err.message);
+        alert("Erreur lors de l'enregistrement dans Supabase : " + err.message);
+      }
+    };
+    reader.readAsBinaryString(file);
   };
 
   const removeFile = (id: string) => {
